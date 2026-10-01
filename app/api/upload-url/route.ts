@@ -17,10 +17,10 @@ export async function POST(req: Request) {
     const uniqueFileName = `${Date.now()}_${fileName}`;
 
     const command = new PutObjectCommand({
-      Bucket: process.env.FILEBASE_BUCKET_NAME,
-      Key: uniqueFileName,
-      ContentType: fileType,
-    });
+  Bucket: process.env.FILEBASE_BUCKET_NAME,
+  Key: uniqueFileName,
+  ContentType: fileType || 'application/octet-stream',
+});
 
     const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
     const publicDownloadUrl = `https://ipfs.filebase.io/ipfs/${uniqueFileName}`;

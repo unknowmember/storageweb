@@ -65,7 +65,7 @@ const handleUpload = async () => {
   // 2. Upload trực tiếp từ trình duyệt lên Filebase
   const xhr = new XMLHttpRequest();
   xhr.open('PUT', uploadUrl);
-  xhr.setRequestHeader('Content-Type', selectedFile.type);
+xhr.setRequestHeader('Content-Type', selectedFile.type || 'application/octet-stream');
 
   xhr.upload.onprogress = (event) => {
     if (event.lengthComputable) {
