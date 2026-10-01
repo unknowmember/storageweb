@@ -49,36 +49,48 @@ export default function Home() {
   };
 
   // Upload hỗ trợ tính % tiến trình (XMLHttpRequest)
-  const handleUpload = () => {
-    if (!selectedFile) return;
+const handleUpload = async () => {
+  if (!selectedFile) return;
 
-    const formData = new FormData();
-    formData.append('file', selectedFile);
+  setUploadProgress(0);
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/upload');
-    xhr.setRequestHeader('x-client-web', 'true');
+  // 1. Lấy link upload
+  const res = await fetch('/api/upload-url', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fileName: selectedFile.name, fileType: selectedFile.type }),
+  });
+  const { uploadUrl, publicDownloadUrl } = await res.json();
 
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        const percent = Math.round((event.loaded / event.total) * 100);
-        setUploadProgress(percent);
-      }
-    };
+  // 2. Upload trực tiếp từ trình duyệt lên Filebase
+  const xhr = new XMLHttpRequest();
+  xhr.open('PUT', uploadUrl);
+  xhr.setRequestHeader('Content-Type', selectedFile.type);
 
-    xhr.onload = () => {
-      if (xhr.status === 200) {
-        setUploadProgress(null);
-        setSelectedFile(null);
-        fetchFiles();
-      } else {
-        alert('Upload thất bại');
-        setUploadProgress(null);
-      }
-    };
-
-    xhr.send(formData);
+  xhr.upload.onprogress = (event) => {
+    if (event.lengthComputable) {
+      setUploadProgress(Math.round((event.loaded / event.total) * 100));
+    }
   };
+
+  xhr.onload = async () => {
+    if (xhr.status === 200) {
+      // 3. Lưu thông tin file vào Supabase DB
+      await supabase.from('files').insert([
+        { name: selectedFile.name, size: selectedFile.size, url: publicDownloadUrl }
+      ]);
+
+      setUploadProgress(null);
+      setSelectedFile(null);
+      fetchFiles();
+    } else {
+      alert('Upload thất bại');
+      setUploadProgress(null);
+    }
+  };
+
+  xhr.send(selectedFile);
+};
 
   const formatSize = (bytes: number) => {
     if (bytes < 1024) return bytes + ' B';
