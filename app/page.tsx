@@ -94,40 +94,75 @@ export default function Home() {
     }
   };
 
-  const handleUpload = async () => {
+const handleUpload = async () => {
     if (!selectedFile || !user) return;
 
     setUploadProgress(0);
 
     try {
-      const formData = new FormData();
-      formData.append('file', selectedFile);
-
-      const res = await fetch('/api/v1/files', {
+      // 1. Lấy Presigned Upload URL từ Server
+      const urlRes = await fetch('/api/v1/upload-url', {
         method: 'POST',
         headers: {
+          'Content-Type': 'application/json',
           'x-api-key': apiKey,
         },
-        body: formData,
+        body: JSON.stringify({
+          fileName: selectedFile.name,
+          fileType: selectedFile.type,
+        }),
       });
 
-      const data = await res.json();
+      const urlData = await urlRes.json();
+      if (!urlData.success) {
+        throw new Error(urlData.error || 'Lấy link upload thất bại');
+      }
 
-      if (data.success) {
+      // 2. Upload trực tiếp file lên S3 Filebase
+      const s3UploadRes = await fetch(urlData.uploadUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': selectedFile.type || 'application/octet-stream',
+        },
+        body: selectedFile,
+      });
+
+      if (!s3UploadRes.ok) {
+        throw new Error('Upload lên S3 thất bại');
+      }
+
+      // 3. Lưu thông tin file vào Database
+      const saveRes = await fetch('/api/v1/files', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+        },
+        body: JSON.stringify({
+          name: selectedFile.name,
+          size: selectedFile.size,
+          s3Key: urlData.s3Key,
+          url: urlData.fileUrl,
+        }),
+      });
+
+      const saveData = await saveRes.json();
+
+      if (saveData.success) {
         alert('Tải lên thành công!');
         setSelectedFile(null);
         setUploadProgress(null);
         fetchFiles();
       } else {
-        alert('Lỗi: ' + (data.error || 'Upload thất bại'));
+        alert('Lỗi lưu Database: ' + saveData.error);
         setUploadProgress(null);
       }
     } catch (err: any) {
-      alert('Lỗi kết nối: ' + err.message);
+      alert('Lỗi: ' + err.message);
       setUploadProgress(null);
     }
   };
-
+  
   const handleDownload = async (file: any) => {
     try {
       const res = await fetch(`/api/v1/files/${file.id}`, {
