@@ -53,19 +53,24 @@ const handleUpload = async () => {
   if (!selectedFile) return;
 
   setUploadProgress(0);
+  const mimeType = selectedFile.type || 'application/octet-stream';
 
-  // 1. Lấy link upload
   const res = await fetch('/api/upload-url', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fileName: selectedFile.name, fileType: selectedFile.type }),
+    body: JSON.stringify({ fileName: selectedFile.name, fileType: mimeType }),
   });
-  const { uploadUrl, publicDownloadUrl } = await res.json();
 
-  // 2. Upload trực tiếp từ trình duyệt lên Filebase
+  const { uploadUrl, publicDownloadUrl, error } = await res.json();
+  if (error) {
+    alert('Lỗi API: ' + error);
+    setUploadProgress(null);
+    return;
+  }
+
   const xhr = new XMLHttpRequest();
   xhr.open('PUT', uploadUrl);
-xhr.setRequestHeader('Content-Type', selectedFile.type || 'application/octet-stream');
+  xhr.setRequestHeader('Content-Type', mimeType);
 
   xhr.upload.onprogress = (event) => {
     if (event.lengthComputable) {
@@ -75,18 +80,21 @@ xhr.setRequestHeader('Content-Type', selectedFile.type || 'application/octet-str
 
   xhr.onload = async () => {
     if (xhr.status === 200) {
-      // 3. Lưu thông tin file vào Supabase DB
       await supabase.from('files').insert([
         { name: selectedFile.name, size: selectedFile.size, url: publicDownloadUrl }
       ]);
-
       setUploadProgress(null);
       setSelectedFile(null);
       fetchFiles();
     } else {
-      alert('Upload thất bại');
+      alert('Upload thất bại (' + xhr.status + ')');
       setUploadProgress(null);
     }
+  };
+
+  xhr.onerror = () => {
+    alert('Lỗi kết nối / CORS');
+    setUploadProgress(null);
   };
 
   xhr.send(selectedFile);
