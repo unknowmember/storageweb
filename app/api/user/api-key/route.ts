@@ -10,7 +10,7 @@ const supabase = createClient(
 export async function POST(req: Request) {
   try {
     const { userId } = await req.json();
-    if (!userId) return NextResponse.json({ error: 'Missing userId' }, { status: 400 });
+    if (!userId) return NextResponse.json({ error: 'Thiếu userId' }, { status: 400 });
 
     const { data: existing } = await supabase
       .from('user_api_keys')
@@ -23,7 +23,11 @@ export async function POST(req: Request) {
     }
 
     const newApiKey = 'sk_live_' + crypto.randomBytes(24).toString('hex');
-    await supabase.from('user_api_keys').insert([{ user_id: userId, api_key: newApiKey }]);
+    const { error } = await supabase
+      .from('user_api_keys')
+      .insert([{ user_id: userId, api_key: newApiKey }]);
+
+    if (error) throw error;
 
     return NextResponse.json({ apiKey: newApiKey });
   } catch (err: any) {

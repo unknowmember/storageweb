@@ -16,35 +16,59 @@ const s3 = new S3Client({
   },
 });
 
-export async function POST(req: Request) {
+async function authenticateApiKey(req: Request) {
+  const apiKey = req.headers.get('x-api-key');
+  if (!apiKey) return null;
+
+  const { data } = await supabase
+    .from('user_api_keys')
+    .select('user_id')
+    .eq('api_key', apiKey)
+    .single();
+
+  return data ? data.user_id : null;
+}
+
+// GET /api/v1/files - Lấy danh sách file
+export async function GET(req: Request) {
   try {
-    const apiKey = req.headers.get('x-api-key');
-    if (!apiKey) {
-      return NextResponse.json({ error: 'Thiếu Header x-api-key' }, { status: 401 });
+    const userId = await authenticateApiKey(req);
+    if (!userId) {
+      return NextResponse.json({ error: 'API Key không hợp lệ (x-api-key)' }, { status: 401 });
     }
 
-    // Kiểm tra API Key hợp lệ
-    const { data: keyData } = await supabase
-      .from('user_api_keys')
-      .select('user_id')
-      .eq('api_key', apiKey)
-      .single();
+    const { data: files, error } = await supabase
+      .from('files')
+      .select('id, name, size, s3_key, created_at, url')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
 
-    if (!keyData) {
-      return NextResponse.json({ error: 'API Key không hợp lệ' }, { status: 403 });
+    if (error) throw error;
+
+    return NextResponse.json({ success: true, count: files.length, files });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+// POST /api/v1/files - Upload file
+export async function POST(req: Request) {
+  try {
+    const userId = await authenticateApiKey(req);
+    if (!userId) {
+      return NextResponse.json({ error: 'API Key không hợp lệ (x-api-key)' }, { status: 401 });
     }
 
     const formData = await req.formData();
     const file = formData.get('file') as File;
     if (!file) {
-      return NextResponse.json({ error: 'Chưa đính kèm file (field: file)' }, { status: 400 });
+      return NextResponse.json({ error: 'Thiếu file trong form-data (field name: file)' }, { status: 400 });
     }
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
     const s3Key = `${Date.now()}_${file.name}`;
 
-    // Upload lên S3
     await s3.send(
       new PutObjectCommand({
         Bucket: process.env.FILEBASE_BUCKET_NAME!,
@@ -54,7 +78,6 @@ export async function POST(req: Request) {
       })
     );
 
-    // Lưu thông tin vào Database
     const { data: fileRecord, error: dbErr } = await supabase
       .from('files')
       .insert([
@@ -62,7 +85,7 @@ export async function POST(req: Request) {
           name: file.name,
           size: file.size,
           s3_key: s3Key,
-          user_id: keyData.user_id,
+          user_id: userId,
           url: `https://s3.filebase.io/${process.env.FILEBASE_BUCKET_NAME}/${s3Key}`,
         },
       ])
@@ -72,7 +95,8 @@ export async function POST(req: Request) {
     if (dbErr) throw dbErr;
 
     return NextResponse.json({
-      message: 'Upload thành công',
+      success: true,
+      message: 'Upload file thành công',
       file: fileRecord,
     });
   } catch (err: any) {

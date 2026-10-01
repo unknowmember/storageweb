@@ -1,300 +1,340 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@supabase/supabase-js';
 
-interface FileItem {
-  id: string;
-  name: string;
-  size: number;
-  url: string;
-  created_at: string;
-}
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
 
 export default function Home() {
+  const [user, setUser] = useState<any>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [user, setUser] = useState<any>(null);
-
-  const [files, setFiles] = useState<FileItem[]>([]);
-  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [files, setFiles] = useState<any[]>([]);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [apiKey, setApiKey] = useState<string>('');
+  const [showKey, setShowKey] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setUser(data.session?.user || null);
-      if (data.session?.user) fetchFiles();
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      setUser(user);
+      if (user) {
+        fetchFiles(user.id);
+        fetchApiKey(user.id);
+      }
     });
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_, session) => {
+      const currentUser = session?.user || null;
+      setUser(currentUser);
+      if (currentUser) {
+        fetchFiles(currentUser.id);
+        fetchApiKey(currentUser.id);
+      } else {
+        setFiles([]);
+        setApiKey('');
+      }
+    });
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
   }, []);
 
-  const fetchFiles = async () => {
+  const fetchApiKey = async (userId: string) => {
+    try {
+      const res = await fetch('/api/user/api-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId }),
+      });
+      const data = await res.json();
+      if (data.apiKey) setApiKey(data.apiKey);
+    } catch (e) {
+      console.error('Lỗi lấy API Key:', e);
+    }
+  };
+
+  const fetchFiles = async (userId?: string) => {
+    const uid = userId || user?.id;
+    if (!uid) return;
+
     const { data } = await supabase
       .from('files')
       .select('*')
+      .eq('user_id', uid)
       .order('created_at', { ascending: false });
+
     if (data) setFiles(data);
   };
 
-  const handleAuth = async (type: 'LOGIN' | 'SIGNUP') => {
-    const action = type === 'LOGIN'
-      ? supabase.auth.signInWithPassword({ email, password })
-      : supabase.auth.signUp({ email, password });
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) alert('Đăng nhập thất bại: ' + error.message);
+  };
 
-    const { data, error } = await action;
-    if (error) alert(error.message);
-    else {
-      setUser(data.user);
-      fetchFiles();
+  const handleSignUp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const { error } = await supabase.auth.signUp({ email, password });
+    if (error) alert('Đăng ký thất bại: ' + error.message);
+    else alert('Đã tạo tài khoản, hãy đăng nhập!');
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setSelectedFile(e.target.files[0]);
     }
   };
 
-  // Upload hỗ trợ tính % tiến trình (XMLHttpRequest)
-const handleUpload = async () => {
-  if (!selectedFile) return;
+  const handleUpload = async () => {
+    if (!selectedFile || !user) return;
 
-  setUploadProgress(0);
+    setUploadProgress(0);
 
-  try {
-    // 1. Lấy Presigned URL từ API
-    const res = await fetch('/api/upload-url', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fileName: selectedFile.name }),
-    });
+    try {
+      const formData = new FormData();
+      formData.append('file', selectedFile);
 
-    const { uploadUrl, publicDownloadUrl, error } = await res.json();
-    if (error) {
-      alert('Lỗi khởi tạo upload: ' + error);
-      setUploadProgress(null);
-      return;
-    }
+      const res = await fetch('/api/v1/files', {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+        },
+        body: formData,
+      });
 
-    // 2. Upload file trực tiếp lên Filebase S3 qua XMLHttpRequest
-    const xhr = new XMLHttpRequest();
-    xhr.open('PUT', uploadUrl);
+      const data = await res.json();
 
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        setUploadProgress(Math.round((event.loaded / event.total) * 100));
-      }
-    };
-
-    xhr.onload = async () => {
-      if (xhr.status === 200 || xhr.status === 204) {
-        // Lưu thông tin file vào Supabase
-        await supabase.from('files').insert([
-          {
-            name: selectedFile.name,
-            size: selectedFile.size,
-            url: publicDownloadUrl,
-          },
-        ]);
-        setUploadProgress(null);
-        setSelectedFile(null);
-        fetchFiles();
+      if (data.success) {
         alert('Tải lên thành công!');
+        setSelectedFile(null);
+        setUploadProgress(null);
+        fetchFiles();
       } else {
-        alert(`Tải lên thất bại với mã lỗi HTTP: ${xhr.status}`);
+        alert('Lỗi: ' + (data.error || 'Upload thất bại'));
         setUploadProgress(null);
       }
-    };
-
-    xhr.onerror = () => {
-      alert('Lỗi kết nối / CORS khi tải lên Filebase!');
+    } catch (err: any) {
+      alert('Lỗi kết nối: ' + err.message);
       setUploadProgress(null);
-    };
+    }
+  };
 
-    xhr.send(selectedFile);
-  } catch (e: any) {
-    alert('Lỗi: ' + e.message);
-    setUploadProgress(null);
-  }
-};
+  const handleDownload = async (file: any) => {
+    try {
+      const res = await fetch(`/api/v1/files/${file.id}`, {
+        headers: { 'x-api-key': apiKey },
+      });
+      const data = await res.json();
+      if (data.downloadUrl) {
+        window.open(data.downloadUrl, '_blank');
+      } else {
+        alert('Không lấy được link tải: ' + (data.error || 'Lỗi hệ thống'));
+      }
+    } catch (err: any) {
+      alert('Lỗi tải file: ' + err.message);
+    }
+  };
+
+  const handleDelete = async (file: any) => {
+    if (!confirm(`Bạn có chắc chắn muốn xóa file "${file.name}"?`)) return;
+
+    try {
+      const res = await fetch(`/api/v1/files/${file.id}`, {
+        method: 'DELETE',
+        headers: { 'x-api-key': apiKey },
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert('Đã xóa file thành công!');
+        fetchFiles();
+      } else {
+        alert('Lỗi khi xóa: ' + (data.error || 'Không thể xóa file'));
+      }
+    } catch (err: any) {
+      alert('Lỗi xóa file: ' + err.message);
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    alert('Đã sao chép vào bộ nhớ tạm!');
+  };
 
   const formatSize = (bytes: number) => {
+    if (!bytes) return '0 B';
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   };
-  // Thêm các hàm sau vào trong component chính của app/page.tsx
-
-const [apiKey, setApiKey] = useState<string>('');
-
-// Lấy/Tạo API Key
-const fetchApiKey = async (userId: string) => {
-  const res = await fetch('/api/user/api-key', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userId }),
-  });
-  const data = await res.json();
-  if (data.apiKey) setApiKey(data.apiKey);
-};
-
-// Hàm Download chuẩn
-const handleDownload = async (file: any) => {
-  const s3Key = file.s3_key || file.url.split('/').pop();
-  const res = await fetch('/api/download-url', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key: s3Key }),
-  });
-  const { downloadUrl, error } = await res.json();
-  if (error) {
-    alert('Lỗi tải file: ' + error);
-    return;
-  }
-  window.open(downloadUrl, '_blank');
-};
-
-// Hàm Xóa file
-const handleDelete = async (file: any) => {
-  if (!confirm(`Bạn có chắc muốn xóa ${file.name}?`)) return;
-
-  const s3Key = file.s3_key || file.url.split('/').pop();
-
-  // 1. Xóa trên S3
-  await fetch('/api/delete-file', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key: s3Key }),
-  });
-
-  // 2. Xóa trong DB Supabase
-  await supabase.from('files').delete().eq('id', file.id);
-
-  fetchFiles(); // Reload lại danh sách
-};
 
   if (!user) {
     return (
-      <main className="min-h-screen bg-gray-950 text-white flex items-center justify-center p-4">
-        <div className="bg-gray-900 border border-gray-800 p-8 rounded-xl w-full max-w-md shadow-2xl">
-          <h1 className="text-2xl font-bold mb-6 text-center text-blue-400">Storage Cloud</h1>
-          <div className="space-y-4">
-            <input
-              className="w-full bg-gray-800 border border-gray-700 p-3 rounded-lg focus:outline-none focus:border-blue-500"
-              placeholder="Email"
-              onChange={(e) => setEmail(e.target.value)}
-            />
-            <input
-              className="w-full bg-gray-800 border border-gray-700 p-3 rounded-lg focus:outline-none focus:border-blue-500"
-              type="password"
-              placeholder="Password"
-              onChange={(e) => setPassword(e.target.value)}
-            />
-            <div className="flex gap-3">
-              <button className="w-1/2 bg-blue-600 hover:bg-blue-500 py-3 rounded-lg font-medium transition" onClick={() => handleAuth('LOGIN')}>Đăng nhập</button>
-              <button className="w-1/2 bg-gray-800 hover:bg-gray-700 border border-gray-700 py-3 rounded-lg font-medium transition" onClick={() => handleAuth('SIGNUP')}>Đăng ký</button>
+      <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-4">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 max-w-md w-full shadow-2xl">
+          <h1 className="text-2xl font-bold mb-6 text-center text-blue-400">File Storage System</h1>
+          <form className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-1 text-slate-300">Email</label>
+              <input
+                type="email"
+                className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white outline-none focus:border-blue-500"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
             </div>
-          </div>
+            <div>
+              <label className="block text-sm font-medium mb-1 text-slate-300">Mật khẩu</label>
+              <input
+                type="password"
+                className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white outline-none focus:border-blue-500"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
+            <div className="flex gap-4 pt-2">
+              <button
+                type="submit"
+                onClick={handleLogin}
+                className="flex-1 bg-blue-600 hover:bg-blue-500 font-semibold py-2 rounded transition"
+              >
+                Đăng nhập
+              </button>
+              <button
+                type="button"
+                onClick={handleSignUp}
+                className="flex-1 bg-slate-800 hover:bg-slate-700 font-semibold py-2 rounded border border-slate-700 transition"
+              >
+                Đăng ký
+              </button>
+            </div>
+          </form>
         </div>
-      </main>
+      </div>
     );
   }
 
   return (
-    <main className="min-h-screen bg-gray-950 text-gray-100 p-6 md:p-12">
-      <div className="max-w-5xl mx-auto space-y-8">
+    <div className="min-h-screen bg-slate-950 text-slate-100 p-6">
+      <div className="max-w-5xl mx-auto space-y-6">
         {/* Header */}
-        <div className="flex justify-between items-center bg-gray-900 p-6 rounded-xl border border-gray-800">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 flex justify-between items-center">
           <div>
             <h1 className="text-2xl font-bold text-blue-400">File Manager</h1>
-            <p className="text-sm text-gray-400">{user.email}</p>
+            <p className="text-sm text-slate-400">{user.email}</p>
           </div>
           <button
-            onClick={() => { supabase.auth.signOut(); setUser(null); }}
-            className="bg-red-500/10 text-red-400 border border-red-500/20 px-4 py-2 rounded-lg text-sm hover:bg-red-500/20 transition"
+            onClick={handleLogout}
+            className="bg-red-600/20 text-red-400 hover:bg-red-600/30 border border-red-500/30 px-4 py-2 rounded-lg font-medium transition"
           >
             Đăng xuất
           </button>
         </div>
 
-        {/* Upload Box */}
-        <div className="bg-gray-900 p-6 rounded-xl border border-gray-800 space-y-4">
-          <h2 className="text-lg font-semibold">Upload File Mới</h2>
-          <div className="flex flex-col sm:flex-row gap-4 items-center">
+        {/* API Key Box */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+          <h2 className="text-lg font-semibold mb-2 text-slate-200">API Key Dùng Cho App Khác</h2>
+          <div className="flex gap-3 items-center">
+            <input
+              type={showKey ? 'text' : 'password'}
+              readOnly
+              value={apiKey || 'Đang tải API Key...'}
+              className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 font-mono text-sm text-green-400 outline-none"
+            />
+            <button
+              onClick={() => setShowKey(!showKey)}
+              className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-2 rounded-lg text-sm border border-slate-700"
+            >
+              {showKey ? 'Ẩn' : 'Hiện'}
+            </button>
+            <button
+              onClick={() => copyToClipboard(apiKey)}
+              className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition"
+            >
+              Sao chép
+            </button>
+          </div>
+        </div>
+
+        {/* Upload File Box */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+          <h2 className="text-lg font-semibold mb-4 text-slate-200">Upload File Mới</h2>
+          <div className="flex gap-4 items-center">
             <input
               type="file"
-              onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-              className="block w-full text-sm text-gray-400 file:mr-4 file:py-2.5 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-500"
+              onChange={handleFileChange}
+              className="block w-full text-sm text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-500 cursor-pointer"
             />
             <button
               onClick={handleUpload}
               disabled={!selectedFile || uploadProgress !== null}
-              className="w-full sm:w-auto bg-blue-600 hover:bg-blue-500 disabled:bg-gray-800 px-6 py-2.5 rounded-lg font-medium transition whitespace-nowrap"
+              className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white px-6 py-2 rounded-lg font-medium transition whitespace-nowrap"
             >
-              Tải lên
+              {uploadProgress !== null ? 'Đang tải lên...' : 'Tải lên'}
             </button>
           </div>
-
-          {/* Thanh Tiến Trình % */}
-          {uploadProgress !== null && (
-            <div className="space-y-2 pt-2">
-              <div className="flex justify-between text-xs text-gray-400">
-                <span>Đang tải lên...</span>
-                <span>{uploadProgress}%</span>
-              </div>
-              <div className="w-full bg-gray-800 h-2.5 rounded-full overflow-hidden">
-                <div
-                  className="bg-blue-500 h-full transition-all duration-150"
-                  style={{ width: `${uploadProgress}%` }}
-                />
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* File List Table */}
-        <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
-          <div className="p-6 border-b border-gray-800">
-            <h2 className="text-lg font-semibold">Danh Sách File Đã Tải Lên</h2>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm text-gray-300">
-              <thead className="bg-gray-950/50 text-gray-400 uppercase text-xs border-b border-gray-800">
-                <tr>
-                  <th className="p-4">Tên File</th>
-                  <th className="p-4">Kích thước</th>
-                  <th className="p-4">Ngày tạo</th>
-                  <th className="p-4 text-right">Thao tác</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-800">
-                {files.length === 0 ? (
+        {/* Danh sách File */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+          <h2 className="text-lg font-semibold mb-4 text-slate-200">Danh Sách File Đã Tải Lên</h2>
+          {files.length === 0 ? (
+            <p className="text-slate-500 text-sm">Chưa có file nào trong kho lưu trữ.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm text-slate-300">
+                <thead className="border-b border-slate-800 text-slate-400 uppercase text-xs">
                   <tr>
-                    <td colSpan={4} className="p-8 text-center text-gray-500">Chưa có file nào được tải lên.</td>
+                    <th className="py-3 px-4">Tên file</th>
+                    <th className="py-3 px-4">Kích thước</th>
+                    <th className="py-3 px-4">Ngày tạo</th>
+                    <th className="py-3 px-4 text-right">Thao tác</th>
                   </tr>
-                ) : (
-                  files.map((file) => (
-                    <tr key={file.id} className="hover:bg-gray-800/50 transition">
-                      <td className="p-4 font-medium text-white max-w-xs truncate">{file.name}</td>
-                      <td className="p-4 text-gray-400">{formatSize(file.size)}</td>
-                      <td className="p-4 text-gray-400">{new Date(file.created_at).toLocaleDateString('vi-VN')}</td>
-                      <td className="p-4 text-right space-x-2">
+                </thead>
+                <tbody className="divide-y divide-slate-800/50">
+                  {files.map((file) => (
+                    <tr key={file.id} className="hover:bg-slate-800/30">
+                      <td className="py-3 px-4 font-medium text-slate-200">{file.name}</td>
+                      <td className="py-3 px-4">{formatSize(file.size)}</td>
+                      <td className="py-3 px-4">
+                        {new Date(file.created_at).toLocaleDateString('vi-VN')}
+                      </td>
+                      <td className="py-3 px-4 text-right space-x-2">
                         <button
-                          onClick={() => navigator.clipboard.writeText(file.url)}
-                          className="bg-gray-800 hover:bg-gray-700 text-xs px-3 py-1.5 rounded-md border border-gray-700 transition"
+                          onClick={() => copyToClipboard(file.url)}
+                          className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded text-xs border border-slate-700"
                         >
                           Copy Link
                         </button>
-                        <a
-                          href={file.url}
-                          target="_blank"
-                          download
-                          className="bg-blue-600 hover:bg-blue-500 text-xs text-white px-3 py-1.5 rounded-md font-medium transition inline-block"
+                        <button
+                          onClick={() => handleDownload(file)}
+                          className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded text-xs font-medium"
                         >
                           Download
-                        </a>
+                        </button>
+                        <button
+                          onClick={() => handleDelete(file)}
+                          className="bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-500/30 px-3 py-1.5 rounded text-xs font-medium"
+                        >
+                          Xóa
+                        </button>
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
-    </main>
+    </div>
   );
 }
