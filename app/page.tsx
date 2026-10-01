@@ -116,6 +116,55 @@ const handleUpload = async () => {
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   };
+  // Thêm các hàm sau vào trong component chính của app/page.tsx
+
+const [apiKey, setApiKey] = useState<string>('');
+
+// Lấy/Tạo API Key
+const fetchApiKey = async (userId: string) => {
+  const res = await fetch('/api/user/api-key', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId }),
+  });
+  const data = await res.json();
+  if (data.apiKey) setApiKey(data.apiKey);
+};
+
+// Hàm Download chuẩn
+const handleDownload = async (file: any) => {
+  const s3Key = file.s3_key || file.url.split('/').pop();
+  const res = await fetch('/api/download-url', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: s3Key }),
+  });
+  const { downloadUrl, error } = await res.json();
+  if (error) {
+    alert('Lỗi tải file: ' + error);
+    return;
+  }
+  window.open(downloadUrl, '_blank');
+};
+
+// Hàm Xóa file
+const handleDelete = async (file: any) => {
+  if (!confirm(`Bạn có chắc muốn xóa ${file.name}?`)) return;
+
+  const s3Key = file.s3_key || file.url.split('/').pop();
+
+  // 1. Xóa trên S3
+  await fetch('/api/delete-file', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: s3Key }),
+  });
+
+  // 2. Xóa trong DB Supabase
+  await supabase.from('files').delete().eq('id', file.id);
+
+  fetchFiles(); // Reload lại danh sách
+};
 
   if (!user) {
     return (
