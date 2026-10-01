@@ -30,10 +30,10 @@ async function authenticateApiKey(req: Request) {
   return data ? data.user_id : null;
 }
 
-// GET /api/v1/files/[id] - Lấy link tải
+// GET /api/v1/files/[id] - Lấy link tải Presigned URL
 export async function GET(
   req: Request,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
   try {
     const userId = await authenticateApiKey(req);
@@ -41,10 +41,13 @@ export async function GET(
       return NextResponse.json({ error: 'API Key không hợp lệ' }, { status: 401 });
     }
 
+    // Await params theo chuẩn Next.js 15/16
+    const { id } = await context.params;
+
     const { data: file } = await supabase
       .from('files')
       .select('*')
-      .eq('id', params.id)
+      .eq('id', id)
       .eq('user_id', userId)
       .single();
 
@@ -69,7 +72,7 @@ export async function GET(
 // DELETE /api/v1/files/[id] - Xóa file
 export async function DELETE(
   req: Request,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
   try {
     const userId = await authenticateApiKey(req);
@@ -77,10 +80,13 @@ export async function DELETE(
       return NextResponse.json({ error: 'API Key không hợp lệ' }, { status: 401 });
     }
 
+    // Await params theo chuẩn Next.js 15/16
+    const { id } = await context.params;
+
     const { data: file } = await supabase
       .from('files')
       .select('*')
-      .eq('id', params.id)
+      .eq('id', id)
       .eq('user_id', userId)
       .single();
 
@@ -98,8 +104,8 @@ export async function DELETE(
       })
     );
 
-    // 2. Xóa trong Database
-    await supabase.from('files').delete().eq('id', params.id);
+    // 2. Xóa trong Database Supabase
+    await supabase.from('files').delete().eq('id', id);
 
     return NextResponse.json({ success: true, message: 'Đã xóa file thành công' });
   } catch (err: any) {
